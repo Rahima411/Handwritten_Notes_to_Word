@@ -1,15 +1,3 @@
----
-title: Handwriting to Word Converter
-emoji: ✍️
-colorFrom: blue
-colorTo: indigo
-sdk: gradio
-sdk_version: 4.44.0
-app_file: app.py
-pinned: false
-license: mit
----
-
 # ✍️ Handwriting to Word Converter
 
 Convert handwritten images to editable Word documents using AI-powered OCR.
