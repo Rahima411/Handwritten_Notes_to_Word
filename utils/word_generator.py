@@ -10,6 +10,7 @@ from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 from typing import List, Dict, Optional, Tuple
+from bs4 import BeautifulSoup
 import re
 import io
 
@@ -42,17 +43,10 @@ class WordGenerator:
         Returns:
             True if text appears to be a header
         """
-        # Headers are often:
-        # - Short (less than 50 chars)
-        # - Start with # or numbers
-        # - All caps or title case
-        # - Contains keywords like "Chapter", "Section", etc.
-        
         text = text.strip()
         if not text:
             return False
         
-        # Check for common header patterns
         header_patterns = [
             r'^#\s*',  # Starts with #
             r'^\d+\.\s*[A-Z]',  # Numbered section
@@ -282,6 +276,87 @@ class WordGenerator:
         
         return self.doc
     
+    def generate_from_qwen_output(self, ocr_text: str, title: Optional[str] = None) -> Document:
+        """
+        Generate a Word document from Qwen2-VL output (Markdown/HTML).
+        
+        Args:
+            ocr_text: The raw text output from the model
+            title: Optional document title
+            
+        Returns:
+            Generated Document
+        """
+        self.create_document()
+        
+        if title:
+            self.doc.add_heading(title, level=1)
+            
+        # Process the text to handle HTML tables
+        # Split by HTML table tags
+        parts = re.split(r'(<table>.*?</table>)', ocr_text, flags=re.DOTALL)
+        
+        for part in parts:
+            if part.strip().startswith('<table>'):
+                # Parse HTML table
+                try:
+                    soup = BeautifulSoup(part, 'html.parser')
+                    table_tag = soup.find('table')
+                    
+                    if table_tag:
+                        rows = table_tag.find_all('tr')
+                        if rows:
+                            # Calculate columns
+                            num_cols = 0
+                            for row in rows:
+                                cols = len(row.find_all(['td', 'th']))
+                                if cols > num_cols:
+                                    num_cols = cols
+                            
+                            if num_cols > 0:
+                                # Create Word table
+                                word_table = self.doc.add_table(rows=len(rows), cols=num_cols)
+                                word_table.style = 'Table Grid'
+                                
+                                # Fill table
+                                for i, row in enumerate(rows):
+                                    cells = row.find_all(['td', 'th'])
+                                    for j, cell in enumerate(cells):
+                                        if j < num_cols:
+                                            word_table.rows[i].cells[j].text = cell.get_text(strip=True)
+                                
+                                self.doc.add_paragraph()  # Add spacing after table
+                except Exception as e:
+                    print(f"Error parsing table: {e}")
+                    self.doc.add_paragraph("[Error parsing table]")
+                    self.doc.add_paragraph(part)
+            else:
+                # Regular text - split by paragraphs
+                # Remove some special tags if present
+                clean_part = part
+                clean_part = re.sub(r'<watermark>(.*?)</watermark>', r'[\1]', clean_part)
+                clean_part = re.sub(r'<page_number>(.*?)</page_number>', r'[Page: \1]', clean_part)
+                clean_part = re.sub(r'<img>(.*?)</img>', r'[Image: \1]', clean_part)
+                
+                paragraphs = clean_part.split('\n\n')
+                for para_text in paragraphs:
+                    if para_text.strip():
+                        # Check for headers (markdown style)
+                        if para_text.strip().startswith('#'):
+                            level = 0
+                            for char in para_text:
+                                if char == '#':
+                                    level += 1
+                                else:
+                                    break
+                            text = para_text[level:].strip()
+                            self.doc.add_heading(text, level=min(level, 9))
+                        else:
+                            p = self.doc.add_paragraph(para_text.strip())
+                            p.style.font.size = Pt(11)
+                            
+        return self.doc
+
     def save(self, filepath: str) -> str:
         """
         Save the document to a file.
@@ -312,3 +387,39 @@ class WordGenerator:
         self.doc.save(buffer)
         buffer.seek(0)
         return buffer.getvalue()
+
+    def combine_documents(self, doc_paths: List[str], output_path: str) -> str:
+        """
+        Combine multiple Word documents into a single document.
+        
+        Args:
+            doc_paths: List of paths to source documents
+            output_path: Path to save the combined document
+            
+        Returns:
+            Path to the combined document
+        """
+        if not doc_paths:
+            return ""
+            
+        # Create master document
+        merged_doc = Document()
+        
+        # Remove empty first paragraph
+        if len(merged_doc.paragraphs) > 0:
+            p = merged_doc.paragraphs[0]
+            p._element.getparent().remove(p._element)
+            
+        for i, doc_path in enumerate(doc_paths):
+            sub_doc = Document(doc_path)
+            
+            # Add page break before subsequent documents
+            if i > 0:
+                merged_doc.add_page_break()
+                
+            # Copy content
+            for element in sub_doc.element.body:
+                merged_doc.element.body.append(element)
+                
+        merged_doc.save(output_path)
+        return output_path

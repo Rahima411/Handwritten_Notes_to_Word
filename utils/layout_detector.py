@@ -1,17 +1,10 @@
-"""
-Layout Detector Module
-Detects columns and dividers in handwritten document images using OpenCV.
-"""
-
 import cv2
 import numpy as np
 from PIL import Image
 from typing import List, Tuple, Optional
 
 
-class LayoutDetector:
-    """Detects layout structure (columns, dividers) in document images."""
-    
+class LayoutDetector:    
     def __init__(self, min_line_length: int = 100, line_threshold: int = 50):
         """
         Initialize the layout detector.
