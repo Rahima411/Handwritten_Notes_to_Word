@@ -187,7 +187,7 @@ def create_interface():
     """Create and return the Gradio interface."""
     
     with gr.Blocks(
-        title="Handwriting to Word Converter",
+        title="Handwriting-to-Word-Converter",
         theme=gr.themes.Soft(
             primary_hue="indigo",
             secondary_hue="blue",

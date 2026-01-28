@@ -1,3 +1,9 @@
+---
+title: handwriting-to-word
+app_file: app.py
+sdk: gradio
+sdk_version: 6.4.0
+---
 # ✍️ Handwriting to Word Converter
 
 Convert handwritten images to editable Word documents using the state-of-the-art **Qwen2-VL-2B-OCR** Vision-Language Model.
