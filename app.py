@@ -1,381 +1,245 @@
-import gradio as gr
-import numpy as np
-from PIL import Image
-import cv2
-import tempfile
+import streamlit as st
 import os
-from pathlib import Path
-from typing import Tuple, Optional
-import io
-
-from utils.layout_detector import LayoutDetector, pil_to_cv2
+import tempfile
+from PIL import Image
 from utils.ocr_processor import OCRProcessor
 from utils.word_generator import WordGenerator
+import zipfile
+import io
+import shutil
 
-layout_detector = None
-ocr_processor = None
-word_generator = None
+# Page Config
+st.set_page_config(
+    page_title="Handwriting to Word Converter",
+    page_icon="📝",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-
-def get_layout_detector():
-    global layout_detector
-    if layout_detector is None:
-        layout_detector = LayoutDetector()
-    return layout_detector
-
-
-def get_ocr_processor():
-    global ocr_processor
-    if ocr_processor is None:
-        ocr_processor = OCRProcessor(gpu=True)
-    return ocr_processor
-
-
-def get_word_generator():
-    global word_generator
-    if word_generator is None:
-        word_generator = WordGenerator()
-    return word_generator
-
-
-def process_image(image: Image.Image, show_columns: bool = False) -> Tuple[np.ndarray, dict]:
-    """
-    Process an image and detect its layout.
-    
-    Args:
-        image: PIL Image
-        show_columns: Whether to visualize detected columns
-        
-    Returns:
-        Tuple of (visualization image, column info dict)
-    """
-    # Convert PIL to OpenCV format
-    cv_image = pil_to_cv2(image)
-    
-    # Detect columns
-    detector = get_layout_detector()
-    columns = detector.detect_columns(cv_image)
-    
-    if show_columns:
-        # Draw columns on image for visualization
-        vis_image = cv_image.copy()
-        colors = [(0, 255, 0), (255, 0, 0), (0, 0, 255), (255, 255, 0)]
-        
-        for idx, (x, y, w, h) in enumerate(columns):
-            color = colors[idx % len(colors)]
-            cv2.rectangle(vis_image, (x, y), (x + w, y + h), color, 3)
-            cv2.putText(vis_image, f"Column {idx + 1}", (x + 10, y + 30),
-                       cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
-        
-        # Convert back to RGB for display
-        vis_image = cv2.cvtColor(vis_image, cv2.COLOR_BGR2RGB)
-        return vis_image, {"num_columns": len(columns), "columns": columns}
-    
-    return cv_image, {"num_columns": len(columns), "columns": columns}
-
-
-def extract_text_from_image(image: Image.Image) -> Tuple[str, dict]:
-    """
-    Extract text from an image using OCR (Qwen2-VL).
-    
-    Args:
-        image: PIL Image
-        
-    Returns:
-        Tuple of (extracted text, metadata dict)
-    """
-    # Get processor
-    processor = get_ocr_processor()
-    
-    # Run Qwen2-VL
-    extracted_text = processor.process_image(image)
-    
-    metadata = {
-        "model": "Qwen2-VL-2B-OCR",
-        "length": len(extracted_text)
+# Custom CSS
+st.markdown("""
+<style>
+    .reportview-container {
+        background: #f0f2f6;
     }
-    
-    return extracted_text, metadata
+    .main-header {
+        font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+        font-size: 2.5rem;
+        color: #4B0082;
+        text-align: center;
+        margin-bottom: 2rem;
+        font-weight: bold;
+    }
+    .stButton>button {
+        background-color: #4B0082;
+        color: white;
+        border-radius: 8px;
+        padding: 0.5rem 1rem;
+        font-weight: bold;
+    }
+    .stButton>button:hover {
+        background-color: #6931a1;
+        border-color: #6931a1;
+        color: white;
+    }
+    .stTextInput>div>div>input {
+        border-radius: 8px;
+    }
+    .css-1aumxhk {
+        padding: 2rem;
+        border-radius: 10px;
+        background-color: white;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+</style>
+""", unsafe_allow_html=True)
 
+st.markdown('<h1 class="main-header">📝 Handwriting to Word Converter</h1>', unsafe_allow_html=True)
 
-def convert_to_word(image: Image.Image, filename: str = "converted_document") -> Tuple[str, str, str]:
+# Initialize Processors with Caching
+@st.cache_resource
+def get_ocr_processor():
     """
-    Convert handwritten image to Word document.
-    
-    Args:
-        image: PIL Image
-        filename: Base filename for the output document
-        
-    Returns:
-        Tuple of (file path, extracted text, status message)
+    Lazy load the OCR processor. This will execute only once.
     """
-    if image is None:
-        return None, "", "Please upload an image first."
-    
-    try:
-        # Run OCR (Qwen2-VL)
-        processor = get_ocr_processor()
-        extracted_text = processor.process_image(image)
-        
-        # Generate Word document
-        generator = WordGenerator()
-        doc = generator.generate_from_qwen_output(extracted_text, title=filename)
-        
-        # Save to temporary file
-        temp_dir = tempfile.mkdtemp()
-        output_path = os.path.join(temp_dir, f"{filename}.docx")
-        generator.save(output_path)
-        
-        status = "Successfully converted using Qwen2-VL-2B-OCR!"
-        
-        return output_path, extracted_text, status
-        
-    except Exception as e:
-        return None, "", f"Error during conversion: {str(e)}"
+    return OCRProcessor()
 
+try:
+    ocr_processor = get_ocr_processor()
+except Exception as e:
+    st.error(f"Failed to load OCR Model: {e}")
+    st.stop()
 
-def batch_convert(images: list, combine_output: bool = False, base_filename: str = "document") -> Tuple[list, str]:
-    """
-    Convert multiple images to Word documents.
-    
-    Args:
-        images: List of PIL Images
-        combine_output: Whether to combine all outputs into one file
-        base_filename: Base filename for output documents
-        
-    Returns:
-        Tuple of (list of file paths, status message)
-    """
-    if not images:
-        return [], "Please upload at least one image."
-    
-    output_files = []
-    results = []
-    
-    for idx, image in enumerate(images):
-        filename = f"{base_filename}_{idx + 1}"
-        file_path, text, status = convert_to_word(image, filename)
-        
-        if file_path:
-            output_files.append(file_path)
-            results.append(f"{filename}.docx: {status}")
-        else:
-            results.append(f"{filename}: {status}")
-            
-    # Combine if requested
-    if combine_output and output_files:
-        try:
-            generator = WordGenerator()
-            # unique output path
-            temp_dir = os.path.dirname(output_files[0])
-            combined_path = os.path.join(temp_dir, f"{base_filename}_combined.docx")
-            generator.combine_documents(output_files, combined_path)
-            
-            # Return only the combined file logic or append it?
-            # Let's return just the combined file as the primary output if merged
-            output_files = [combined_path]
-            results.append(f"\n✅ Merged {len(images)} documents into {base_filename}_combined.docx")
-        except Exception as e:
-            results.append(f"\n❌ Merge failed: {str(e)}")
-    
-    status_text = "\n".join(results)
-    return output_files, status_text
+# Helper function to clear session state
+def clear_state():
+    if 'single_result_doc' in st.session_state:
+        del st.session_state['single_result_doc']
+    if 'single_result_text' in st.session_state:
+        del st.session_state['single_result_text']
+    if 'batch_results' in st.session_state:
+        del st.session_state['batch_results']
 
-
-# Create the Gradio interface
-def create_interface():
-    """Create and return the Gradio interface."""
-    
-    with gr.Blocks(
-        title="Handwriting-to-Word-Converter",
-        theme=gr.themes.Soft(
-            primary_hue="indigo",
-            secondary_hue="blue",
-            neutral_hue="slate",
-            text_size=gr.themes.sizes.text_lg
-        ).set(
-            button_primary_background_fill="*primary_500",
-            button_primary_background_fill_hover="*primary_600",
-        ),
-        css="""
-        .main-title {
-            text-align: center;
-            margin-bottom: 2rem;
-            color: #4F46E5;
-        }
-        .main-title h1 {
-            font-size: 3rem;
-            font-weight: 800;
-        }
-        .output-text {
-            font-family: 'Courier New', monospace;
-            background-color: #f8fafc;
-            padding: 1.5rem;
-            border-radius: 0.5rem;
-            border: 1px solid #e2e8f0;
-        }
-        button.primary-btn {
-            font-weight: bold;
-            font-size: 1.1em;
-        }
+# Sidebar
+with st.sidebar:
+    st.image("https://img.icons8.com/clouds/200/000000/document.png", width=150)
+    st.title("Settings & Info")
+    st.info(
         """
-    ) as demo:
-        
-        gr.Markdown(
-            """
-            # ✍️ Handwriting to Word Converter
-            
-            ### Convert handwritten notes to editable Word documents with Qwen2-VL AI
-            
-            This tool uses the state-of-the-art **Qwen2-VL-2B-OCR** model to transcribe handwriting and smart tables directly into Word format (DOCX).
-            
-            ---
-            """,
-            elem_classes=["main-title"]
-        )
-        
-        with gr.Tabs():
-            # Single Image Tab
-            with gr.TabItem("📄 Single Image", id=1):
-                with gr.Row():
-                    with gr.Column(scale=1):
-                        input_image = gr.Image(
-                            label="Upload Handwritten Image",
-                            type="pil",
-                            height=450,
-                            sources=["upload", "clipboard"]
-                        )
-                        
-                        with gr.Row():
-                            filename_input = gr.Textbox(
-                                label="Output Filename",
-                                value="converted_document",
-                                placeholder="Enter filename (without extension)",
-                                scale=2
-                            )
-                        
-                        convert_btn = gr.Button(
-                            "✨ Convert to Word",
-                            variant="primary",
-                            size="lg",
-                            elem_classes=["primary-btn"]
-                        )
-                    
-                    with gr.Column(scale=1):
-                        status_output = gr.Textbox(
-                            label="Status",
-                            interactive=False
-                        )
-                        
-                        output_file = gr.File(
-                            label="📥 Download Word Document",
-                            file_types=[".docx"]
-                        )
-                        
-                        extracted_text = gr.Textbox(
-                            label="📝 Extracted Text Preview",
-                            lines=20,
-                            interactive=False,
-                            elem_classes=["output-text"]
-                        )            
-                
-                # Event handlers for single image
-                convert_btn.click(
-                    fn=convert_to_word,
-                    inputs=[input_image, filename_input],
-                    outputs=[output_file, extracted_text, status_output]
-                )
-            
-            # Batch Processing Tab
-            with gr.TabItem("📚 Batch Processing", id=2):
-                gr.Markdown(
-                    """
-                    ### Batch Convert Multiple Images
-                    Upload multiple handwritten images to convert them all at once. Check **Combine Output** to merge them into a single Word file.
-                    """
-                )
-                
-                with gr.Row():
-                    with gr.Column(scale=1):
-                        batch_files = gr.File(
-                            label="Upload Images",
-                            file_count="multiple",
-                            file_types=["image"],
-                            height=300
-                        )
-                        
-                        batch_filename = gr.Textbox(
-                            label="Base Filename",
-                            value="document",
-                            placeholder="Base name for output files"
-                        )
-                        
-                        combine_chk = gr.Checkbox(
-                            label="🧩 Combine all into one single DOCX file",
-                            value=False,
-                            info="If checked, you will get one merged document with page breaks."
-                        )
-                        
-                        batch_btn = gr.Button(
-                            "🚀 Convert All",
-                            variant="primary",
-                            size="lg",
-                            elem_classes=["primary-btn"]
-                        )
-                    
-                    with gr.Column(scale=1):
-                        batch_status = gr.Textbox(
-                            label="Conversion Log",
-                            lines=15,
-                            interactive=False
-                        )
-                        
-                        batch_output = gr.File(
-                            label="📥 Download Converted Documents",
-                            file_count="multiple"
-                        )
-                
-                def process_batch_files(files, combine, base_name):
-                    if not files:
-                        return [], "⚠️ Please upload images first."
-                    
-                    images = []
-                    for f in files:
-                        try:
-                            img = Image.open(f.name)
-                            images.append(img)
-                        except Exception as e:
-                            pass
-                    
-                    return batch_convert(images, combine, base_name)
-                
-                batch_btn.click(
-                    fn=process_batch_files,
-                    inputs=[batch_files, combine_chk, batch_filename],
-                    outputs=[batch_output, batch_status]
-                )
-            
-        
-        gr.Markdown(
-            """
-            ---
-            <center>
-            <p style="color: gray; font-size: 14px;">
-            Handwriting to Word Converter | Powered by <b>Qwen2-VL</b> & <b>Gradio</b>
-            </p>
-            </center>
-            """
-        )
-    
-    return demo
-
-
-# Create and launch the app
-demo = create_interface()
-
-if __name__ == "__main__":
-    demo.launch(
-        share=True,  # Set to True for public link
-        server_name="0.0.0.0",
-        server_port=7861
+        **Model:** Qwen2-VL-2B-OCR
+        **Capabilities:**
+        - Handwriting Recognition
+        - Table Structure Extraction
+        - Layout Preservation
+        """
     )
+    if st.button("Clear History"):
+        clear_state()
+        st.rerun()
+
+# Tabs
+tab1, tab2 = st.tabs(["📄 Single Image Conversion", "📚 Batch Analysis"])
+
+# --- Tab 1: Single Image ---
+with tab1:
+    st.markdown("### Convert a Single Handwritten Page")
+    uploaded_file = st.file_uploader("Upload an Image", type=["png", "jpg", "jpeg", "bmp", "tiff"], key="single_upload")
+
+    if uploaded_file is not None:
+        image = Image.open(uploaded_file)
+        
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            st.image(image, caption="Uploaded Image", use_container_width=True)
+            
+        with col2:
+            if st.button("Convert to Word", key="convert_single"):
+                with st.spinner("Processing... The model is analyzing your image..."):
+                    try:
+                        # Process Image
+                        raw_text = ocr_processor.process_image(image)
+                        
+                        # Generate Word Doc
+                        # Instantiate new WordGenerator for each conversion
+                        wg = WordGenerator() 
+                        doc = wg.generate_from_qwen_output(raw_text)
+                        
+                        # Save to bytes for download
+                        doc_bytes = wg.save_to_bytes()
+                        
+                        # Store in session state
+                        st.session_state['single_result_doc'] = doc_bytes
+                        st.session_state['single_result_text'] = raw_text
+                        st.session_state['single_filename'] = os.path.splitext(uploaded_file.name)[0] + ".docx"
+                        
+                    except Exception as e:
+                        st.error(f"An error occurred: {str(e)}")
+
+    # Display Results if available
+    if 'single_result_text' in st.session_state and uploaded_file is not None:
+        st.divider()
+        st.success("Conversion Successful! 🎉")
+        
+        col_res1, col_res2 = st.columns(2)
+        
+        with col_res1:
+            st.subheader("Extracted Text Preview")
+            st.markdown("The underlying structured text extracted from the image:")
+            st.text_area("Extracted Text", value=st.session_state['single_result_text'], height=400, label_visibility="collapsed")
+            
+        with col_res2:
+            st.subheader("Download Result")
+            st.markdown("Download the fully formatted Word document:")
+            
+            st.download_button(
+                label="📥 Download Word Document",
+                data=st.session_state['single_result_doc'],
+                file_name=st.session_state.get('single_filename', 'converted.docx'),
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            )
+
+# --- Tab 2: Batch Processing ---
+with tab2:
+    st.markdown("### Batch Process Multiple Images")
+    uploaded_files = st.file_uploader("Upload Multiple Images", type=["png", "jpg", "jpeg", "bmp", "tiff"], accept_multiple_files=True, key="batch_upload")
+    combine_output = st.checkbox("Combine all outputs into a single Word document?", value=True)
+    
+    if uploaded_files:
+        if st.button("Start Batch Conversion", key="convert_batch"):
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            converted_paths = []
+            temp_dir = tempfile.mkdtemp()
+            
+            try:
+                total_files = len(uploaded_files)
+                for i, file in enumerate(uploaded_files):
+                    status_text.text(f"Processing {i+1}/{total_files}: {file.name}...")
+                    
+                    image = Image.open(file)
+                    raw_text = ocr_processor.process_image(image)
+                    
+                    wg = WordGenerator()
+                    wg.generate_from_qwen_output(raw_text)
+                    
+                    # Save individual doc to temp file
+                    temp_doc_path = os.path.join(temp_dir, f"{os.path.splitext(file.name)[0]}.docx")
+                    wg.save(temp_doc_path)
+                    converted_paths.append(temp_doc_path)
+                    
+                    progress_bar.progress((i + 1) / total_files)
+                
+                status_text.text("Processing complete! Preparing download...")
+                
+                # Handle Output
+                final_files = {} # filename: bytes
+                
+                if combine_output and len(converted_paths) > 0:
+                    combined_path = os.path.join(temp_dir, "combined_batch_output.docx")
+                    WordGenerator().combine_documents(converted_paths, combined_path)
+                    
+                    with open(combined_path, "rb") as f:
+                        final_files["combined_batch_output.docx"] = f.read()
+                        
+                    st.session_state['batch_results'] = {
+                        "type": "single",
+                        "data": final_files["combined_batch_output.docx"],
+                        "name": "combined_batch_output.docx"
+                    }
+                    
+                elif len(converted_paths) > 0:
+                    # Zip individual files
+                    zip_buffer = io.BytesIO()
+                    with zipfile.ZipFile(zip_buffer, "w") as zf:
+                        for doc_path in converted_paths:
+                            zf.write(doc_path, os.path.basename(doc_path))
+                    zip_buffer.seek(0)
+                    
+                    st.session_state['batch_results'] = {
+                        "type": "zip",
+                        "data": zip_buffer.getvalue(),
+                        "name": "batch_output.zip"
+                    }
+                
+                st.success("Batch Processing Finished! 🎉")
+                
+            except Exception as e:
+                st.error(f"An error occurred during batch processing: {str(e)}")
+            finally:
+                # Cleanup
+                try:
+                    shutil.rmtree(temp_dir)
+                except:
+                    pass
+
+    # Display Batch Results
+    if 'batch_results' in st.session_state and uploaded_files:
+        st.divider()
+        res = st.session_state['batch_results']
+        mime_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document" if res["type"] == "single" else "application/zip"
+        
+        st.download_button(
+            label=f"📥 Download {res['name']}",
+            data=res['data'],
+            file_name=res['name'],
+            mime=mime_type
+        )
