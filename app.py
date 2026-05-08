@@ -148,7 +148,7 @@ with st.sidebar:
     st.title("Settings & Info")
     st.info(
         """
-        **Model:** Qwen3-VL-2B-Instruct
+        **Model:** JackChew/Qwen2-VL-2B-OCR
         **Capabilities:**
         - Handwriting Recognition
         - Table Structure Extraction

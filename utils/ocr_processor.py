@@ -19,9 +19,9 @@ except Exception:
 
 class OCRProcessor:
     
-    def __init__(self, model_id: str = "Qwen/Qwen3-VL-2B-Instruct", gpu: bool = True):
+    def __init__(self, model_id: str = "JackChew/Qwen2-VL-2B-OCR", gpu: bool = True):
         """
-        Initialize the Qwen3-VL processor.
+        Initialize the Qwen2-VL OCR processor.
         
         Args:
             model_id: Hugging Face model ID
@@ -35,8 +35,8 @@ class OCRProcessor:
     @property
     def pipeline(self):
         if self._model is None:
-            print(f"Loading Qwen3-VL model ({self.model_id})...")
-            print("Loading Qwen3-VL processor...")
+            print(f"Loading Qwen2-VL OCR model ({self.model_id})...")
+            print("Loading Qwen2-VL OCR processor...")
             self._processor = AutoProcessor.from_pretrained(
                 self.model_id,
                 trust_remote_code=True,
@@ -49,20 +49,20 @@ class OCRProcessor:
             if has_accelerate:
                 model_kwargs["device_map"] = self.device
 
-            print(f"Loading Qwen3-VL model weights on {self.device}...")
+            print(f"Loading Qwen2-VL OCR model weights on {self.device}...")
             self._model = AutoModelForImageTextToText.from_pretrained(
                 self.model_id,
                 **model_kwargs,
             ).eval()
             if not has_accelerate:
-                print(f"Moving Qwen3-VL model to {self.device}...")
+                print(f"Moving Qwen2-VL OCR model to {self.device}...")
                 self._model = self._model.to(self.device)
-            print("Qwen3-VL model is ready.")
+            print("Qwen2-VL OCR model is ready.")
         return self._processor, self._model
 
     def process_image(self, image: Union[Image.Image, np.ndarray], prompt: str = None) -> str:
         """
-        Extract text and structure from an image using Qwen3-VL.
+        Extract text and structure from an image using Qwen2-VL OCR.
         
         Args:
             image: PIL Image or numpy array
