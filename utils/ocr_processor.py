@@ -19,9 +19,9 @@ except Exception:
 
 class OCRProcessor:
     
-    def __init__(self, model_id: str = "JackChew/Qwen2-VL-2B-OCR", gpu: bool = True):
+    def __init__(self, model_id: str = "Qwen/Qwen3-VL-2B-Instruct", gpu: bool = True):
         """
-        Initialize the Qwen2-VL processor.
+        Initialize the Qwen3-VL processor.
         
         Args:
             model_id: Hugging Face model ID
@@ -31,41 +31,38 @@ class OCRProcessor:
         self.device = "cuda" if gpu and torch.cuda.is_available() else "cpu"
         self._processor = None
         self._model = None
-        self.image_size = {
-            "shortest_edge": 3136,
-            "longest_edge": 12845056,
-        }
         
     @property
     def pipeline(self):
         if self._model is None:
-            print(f"Loading Qwen2-VL model ({self.model_id})...")
-            print("Loading Qwen2-VL processor...")
+            print(f"Loading Qwen3-VL model ({self.model_id})...")
+            print("Loading Qwen3-VL processor...")
             self._processor = AutoProcessor.from_pretrained(
                 self.model_id,
                 trust_remote_code=True,
-                size=self.image_size,
-                use_fast=False,
             )
-            model_kwargs = {"trust_remote_code": True}
+            model_kwargs = {
+                "trust_remote_code": True,
+                "torch_dtype": torch.float16 if self.device == "cuda" else torch.float32,
+            }
             has_accelerate = importlib.util.find_spec("accelerate") is not None
             if has_accelerate:
                 model_kwargs["device_map"] = self.device
 
-            print(f"Loading Qwen2-VL model weights on {self.device}...")
+            print(f"Loading Qwen3-VL model weights on {self.device}...")
             self._model = AutoModelForImageTextToText.from_pretrained(
                 self.model_id,
                 **model_kwargs,
             ).eval()
             if not has_accelerate:
-                print(f"Moving Qwen2-VL model to {self.device}...")
+                print(f"Moving Qwen3-VL model to {self.device}...")
                 self._model = self._model.to(self.device)
-            print("Qwen2-VL model is ready.")
+            print("Qwen3-VL model is ready.")
         return self._processor, self._model
 
     def process_image(self, image: Union[Image.Image, np.ndarray], prompt: str = None) -> str:
         """
-        Extract text and structure from an image using Qwen2-VL.
+        Extract text and structure from an image using Qwen3-VL.
         
         Args:
             image: PIL Image or numpy array
@@ -89,6 +86,7 @@ class OCRProcessor:
                 "content": [
                     {
                         "type": "image",
+                        "image": image,
                     },
                     {
                         "type": "text",
@@ -99,13 +97,14 @@ class OCRProcessor:
         ]
         
         # Preprocess
-        text_prompt = processor.apply_chat_template(conversation, add_generation_prompt=True)
-        inputs = processor(
-            text=[text_prompt], 
-            images=[image], 
-            padding=True, 
-            return_tensors="pt"
+        inputs = processor.apply_chat_template(
+            conversation,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_dict=True,
+            return_tensors="pt",
         )
+        inputs.pop("token_type_ids", None)
         inputs = inputs.to(self.device)
         
         # Generate

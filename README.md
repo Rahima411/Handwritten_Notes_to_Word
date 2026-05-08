@@ -62,7 +62,7 @@ contain private information.
 
 ## Intelligence Layer
 
-- ML/Vision model: Qwen2-VL OCR through Hugging Face Transformers.
+- ML/Vision model: Qwen3-VL through Hugging Face Transformers.
 - Rules: page observation, layout hints, review warnings, output policies.
 - LLM-style prompting: dynamic OCR prompts for structured notes, exact
   transcription, tables, and chemistry-heavy pages.
