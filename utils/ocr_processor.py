@@ -3,6 +3,19 @@ from transformers import AutoProcessor, AutoModelForImageTextToText
 from PIL import Image
 import numpy as np
 from typing import List, Dict, Union
+import importlib.util
+
+
+class _TorchClassesPath:
+    """Prevents Streamlit's source watcher from probing torch custom classes."""
+
+    _path = []
+
+
+try:
+    torch.classes.__path__ = _TorchClassesPath()
+except Exception:
+    pass
 
 class OCRProcessor:
     
@@ -18,25 +31,45 @@ class OCRProcessor:
         self.device = "cuda" if gpu and torch.cuda.is_available() else "cpu"
         self._processor = None
         self._model = None
+        self.image_size = {
+            "shortest_edge": 3136,
+            "longest_edge": 12845056,
+        }
         
     @property
     def pipeline(self):
         if self._model is None:
             print(f"Loading Qwen2-VL model ({self.model_id})...")
-            self._processor = AutoProcessor.from_pretrained(self.model_id, trust_remote_code=True)
+            print("Loading Qwen2-VL processor...")
+            self._processor = AutoProcessor.from_pretrained(
+                self.model_id,
+                trust_remote_code=True,
+                size=self.image_size,
+                use_fast=False,
+            )
+            model_kwargs = {"trust_remote_code": True}
+            has_accelerate = importlib.util.find_spec("accelerate") is not None
+            if has_accelerate:
+                model_kwargs["device_map"] = self.device
+
+            print(f"Loading Qwen2-VL model weights on {self.device}...")
             self._model = AutoModelForImageTextToText.from_pretrained(
                 self.model_id,
-                device_map=self.device, 
-                trust_remote_code=True
+                **model_kwargs,
             ).eval()
+            if not has_accelerate:
+                print(f"Moving Qwen2-VL model to {self.device}...")
+                self._model = self._model.to(self.device)
+            print("Qwen2-VL model is ready.")
         return self._processor, self._model
 
-    def process_image(self, image: Union[Image.Image, np.ndarray]) -> str:
+    def process_image(self, image: Union[Image.Image, np.ndarray], prompt: str = None) -> str:
         """
         Extract text and structure from an image using Qwen2-VL.
         
         Args:
             image: PIL Image or numpy array
+            prompt: Optional task prompt for the vision-language model
             
         Returns:
             Extracted text (Markdown/HTML format)
@@ -46,6 +79,8 @@ class OCRProcessor:
         # Ensure image is PIL
         if isinstance(image, np.ndarray):
             image = Image.fromarray(image)
+        
+        task_prompt = prompt or "extract all data from these handwritten notes without miss anything"
         
         # Prepare conversation prompt
         conversation = [
@@ -57,7 +92,7 @@ class OCRProcessor:
                     },
                     {
                         "type": "text",
-                        "text": "extract all data from these handwritten notes without miss anything"
+                        "text": task_prompt
                     }
                 ]
             }
