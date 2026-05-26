@@ -2,6 +2,9 @@ import streamlit as st
 import os
 import tempfile
 from PIL import Image
+from agent.memory import AgentMemory
+from agent.orchestrator import HandwritingAgent
+from agent.state import AgentConfig
 from utils.ocr_processor import OCRProcessor
 from utils.word_generator import WordGenerator
 import zipfile
@@ -64,8 +67,17 @@ def get_ocr_processor():
     """
     return OCRProcessor()
 
+
+@st.cache_resource
+def get_agent(_ocr_processor):
+    """
+    Lazy load the goal-based conversion agent.
+    """
+    return HandwritingAgent(_ocr_processor, memory=AgentMemory())
+
 try:
     ocr_processor = get_ocr_processor()
+    handwriting_agent = get_agent(ocr_processor)
 except Exception as e:
     st.error(f"Failed to load OCR Model: {e}")
     st.stop()
@@ -78,6 +90,57 @@ def clear_state():
         del st.session_state['single_result_text']
     if 'batch_results' in st.session_state:
         del st.session_state['batch_results']
+    if 'agent_single_result' in st.session_state:
+        del st.session_state['agent_single_result']
+    if 'agent_batch_result' in st.session_state:
+        del st.session_state['agent_batch_result']
+
+
+def build_agent_config() -> AgentConfig:
+    return AgentConfig(
+        output_mode=st.session_state.get("agent_output_mode", "structured"),
+        autonomy_level=st.session_state.get("agent_autonomy_level", "semi"),
+        allow_memory=st.session_state.get("agent_allow_memory", False),
+        use_cloud_models=False,
+        preserve_chemistry=st.session_state.get("agent_preserve_chemistry", True),
+        prefer_exact_transcription=st.session_state.get("agent_exact_transcription", False),
+    )
+
+
+def render_agent_review(result):
+    st.subheader("Agent Review")
+    observation = result.observation
+    decision = result.decision
+
+    col_a, col_b, col_c = st.columns(3)
+    col_a.metric("Strategy", decision.strategy.replace("_", " ").title())
+    col_b.metric("Page", f"{observation.width} x {observation.height}")
+    col_c.metric("Review Needed", "Yes" if decision.requires_review else "No")
+
+    with st.expander("What the agent observed", expanded=True):
+        if observation.notes:
+            for note in observation.notes:
+                st.write(f"- {note}")
+        else:
+            st.write("No special layout signals detected.")
+
+    with st.expander("Why this strategy was selected"):
+        for item in decision.rationale:
+            st.write(f"- {item}")
+
+    if result.feedback_items:
+        st.warning("Please review these items before trusting the final document:")
+        for item in result.feedback_items:
+            st.write(f"- {item}")
+    else:
+        st.success("No major review warnings were detected.")
+
+    with st.expander("Agent OCR prompt"):
+        st.code(decision.prompt)
+
+    with st.expander("Audit log"):
+        for item in result.audit_log:
+            st.write(f"- {item}")
 
 # Sidebar
 with st.sidebar:
@@ -85,13 +148,41 @@ with st.sidebar:
     st.title("Settings & Info")
     st.info(
         """
-        **Model:** Qwen2-VL-2B-OCR
+        **Model:** JackChew/Qwen2-VL-2B-OCR
         **Capabilities:**
         - Handwriting Recognition
         - Table Structure Extraction
         - Layout Preservation
         """
     )
+    st.divider()
+    st.subheader("Agent Controls")
+    st.toggle("Use agentic workflow", value=True, key="use_agentic_workflow")
+    st.selectbox(
+        "Output mode",
+        options=["structured", "exact"],
+        index=0,
+        key="agent_output_mode",
+        help="Structured creates cleaner Word formatting. Exact keeps rough line order closer to the page.",
+    )
+    st.selectbox(
+        "Autonomy level",
+        options=["semi", "full"],
+        index=0,
+        key="agent_autonomy_level",
+        help="Semi-autonomy shows review notes and audit details before you trust the result.",
+    )
+    st.checkbox("Preserve chemistry notation", value=True, key="agent_preserve_chemistry")
+    st.checkbox("Prefer exact transcription", value=False, key="agent_exact_transcription")
+    st.checkbox(
+        "Remember non-sensitive preferences",
+        value=False,
+        key="agent_allow_memory",
+        help="Stores output preferences locally only. Uploaded notes are not stored.",
+    )
+    if st.button("Forget Agent Memory"):
+        AgentMemory().forget()
+        st.success("Local agent memory cleared.")
     if st.button("Clear History"):
         clear_state()
         st.rerun()
@@ -115,21 +206,34 @@ with tab1:
             if st.button("Convert to Word", key="convert_single"):
                 with st.spinner("Processing... The model is analyzing your image..."):
                     try:
-                        # Process Image
-                        raw_text = ocr_processor.process_image(image)
-                        
-                        # Generate Word Doc
-                        # Instantiate new WordGenerator for each conversion
-                        wg = WordGenerator() 
-                        doc = wg.generate_from_qwen_output(raw_text)
-                        
-                        # Save to bytes for download
-                        doc_bytes = wg.save_to_bytes()
-                        
-                        # Store in session state
-                        st.session_state['single_result_doc'] = doc_bytes
-                        st.session_state['single_result_text'] = raw_text
-                        st.session_state['single_filename'] = os.path.splitext(uploaded_file.name)[0] + ".docx"
+                        if st.session_state.get("use_agentic_workflow", True):
+                            result = handwriting_agent.process_image(
+                                image,
+                                filename=uploaded_file.name,
+                                config=build_agent_config(),
+                            )
+                            st.session_state['agent_single_result'] = result
+                            st.session_state['single_result_doc'] = result.document_bytes
+                            st.session_state['single_result_text'] = result.raw_text
+                            st.session_state['single_filename'] = result.filename
+                        else:
+                            # Process Image
+                            raw_text = ocr_processor.process_image(image)
+                            
+                            # Generate Word Doc
+                            # Instantiate new WordGenerator for each conversion
+                            wg = WordGenerator() 
+                            doc = wg.generate_from_qwen_output(raw_text)
+                            
+                            # Save to bytes for download
+                            doc_bytes = wg.save_to_bytes()
+                            
+                            # Store in session state
+                            st.session_state['single_result_doc'] = doc_bytes
+                            st.session_state['single_result_text'] = raw_text
+                            st.session_state['single_filename'] = os.path.splitext(uploaded_file.name)[0] + ".docx"
+                            if 'agent_single_result' in st.session_state:
+                                del st.session_state['agent_single_result']
                         
                     except Exception as e:
                         st.error(f"An error occurred: {str(e)}")
@@ -139,6 +243,9 @@ with tab1:
         st.divider()
         st.success("Conversion Successful! 🎉")
         
+        if 'agent_single_result' in st.session_state:
+            render_agent_review(st.session_state['agent_single_result'])
+
         col_res1, col_res2 = st.columns(2)
         
         with col_res1:
@@ -164,6 +271,28 @@ with tab2:
     combine_output = st.checkbox("Combine all outputs into a single Word document?", value=True)
     
     if uploaded_files:
+        if st.session_state.get("use_agentic_workflow", True):
+            if st.button("Start Agent Batch Conversion", key="convert_agent_batch"):
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                try:
+                    status_text.text("Agent is observing, deciding, and processing the batch...")
+                    batch_result = handwriting_agent.process_batch(
+                        uploaded_files,
+                        combine_output=combine_output,
+                        config=build_agent_config(),
+                    )
+                    progress_bar.progress(1.0)
+                    st.session_state['agent_batch_result'] = batch_result
+                    st.session_state['batch_results'] = {
+                        "type": batch_result.output_type,
+                        "data": batch_result.output_bytes,
+                        "name": batch_result.filename
+                    }
+                    st.success("Agent batch processing finished.")
+                except Exception as e:
+                    st.error(f"An error occurred during agent batch processing: {str(e)}")
+
         if st.button("Start Batch Conversion", key="convert_batch"):
             progress_bar = st.progress(0)
             status_text = st.empty()
@@ -234,6 +363,18 @@ with tab2:
     # Display Batch Results
     if 'batch_results' in st.session_state and uploaded_files:
         st.divider()
+        if 'agent_batch_result' in st.session_state:
+            batch_result = st.session_state['agent_batch_result']
+            st.subheader("Agent Batch Review")
+            st.write(f"Processed pages: {batch_result.metadata.get('pages', 0)}")
+            if batch_result.feedback_items:
+                st.warning("Review these batch items before trusting the final document:")
+                for item in batch_result.feedback_items:
+                    st.write(f"- {item}")
+            with st.expander("Batch audit log"):
+                for item in batch_result.audit_log:
+                    st.write(f"- {item}")
+
         res = st.session_state['batch_results']
         mime_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document" if res["type"] == "single" else "application/zip"
         

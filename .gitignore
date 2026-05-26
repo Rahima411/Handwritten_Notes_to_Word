@@ -12,5 +12,6 @@ venv/
 env/
 .venv-*/
 
-utils/__pycache__/
+utils/__pycache__
 .env
+.agent_memory.json

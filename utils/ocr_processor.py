@@ -3,12 +3,25 @@ from transformers import AutoProcessor, AutoModelForImageTextToText
 from PIL import Image
 import numpy as np
 from typing import List, Dict, Union
+import importlib.util
+
+
+class _TorchClassesPath:
+    """Prevents Streamlit's source watcher from probing torch custom classes."""
+
+    _path = []
+
+
+try:
+    torch.classes.__path__ = _TorchClassesPath()
+except Exception:
+    pass
 
 class OCRProcessor:
     
     def __init__(self, model_id: str = "JackChew/Qwen2-VL-2B-OCR", gpu: bool = True):
         """
-        Initialize the Qwen2-VL processor.
+        Initialize the Qwen2-VL OCR processor.
         
         Args:
             model_id: Hugging Face model ID
@@ -22,21 +35,38 @@ class OCRProcessor:
     @property
     def pipeline(self):
         if self._model is None:
-            print(f"Loading Qwen2-VL model ({self.model_id})...")
-            self._processor = AutoProcessor.from_pretrained(self.model_id, trust_remote_code=True)
+            print(f"Loading Qwen2-VL OCR model ({self.model_id})...")
+            print("Loading Qwen2-VL OCR processor...")
+            self._processor = AutoProcessor.from_pretrained(
+                self.model_id,
+                trust_remote_code=True,
+            )
+            model_kwargs = {
+                "trust_remote_code": True,
+                "torch_dtype": torch.float16 if self.device == "cuda" else torch.float32,
+            }
+            has_accelerate = importlib.util.find_spec("accelerate") is not None
+            if has_accelerate:
+                model_kwargs["device_map"] = self.device
+
+            print(f"Loading Qwen2-VL OCR model weights on {self.device}...")
             self._model = AutoModelForImageTextToText.from_pretrained(
                 self.model_id,
-                device_map=self.device, 
-                trust_remote_code=True
+                **model_kwargs,
             ).eval()
+            if not has_accelerate:
+                print(f"Moving Qwen2-VL OCR model to {self.device}...")
+                self._model = self._model.to(self.device)
+            print("Qwen2-VL OCR model is ready.")
         return self._processor, self._model
 
-    def process_image(self, image: Union[Image.Image, np.ndarray]) -> str:
+    def process_image(self, image: Union[Image.Image, np.ndarray], prompt: str = None) -> str:
         """
-        Extract text and structure from an image using Qwen2-VL.
+        Extract text and structure from an image using Qwen2-VL OCR.
         
         Args:
             image: PIL Image or numpy array
+            prompt: Optional task prompt for the vision-language model
             
         Returns:
             Extracted text (Markdown/HTML format)
@@ -47,6 +77,8 @@ class OCRProcessor:
         if isinstance(image, np.ndarray):
             image = Image.fromarray(image)
         
+        task_prompt = prompt or "extract all data from these handwritten notes without miss anything"
+        
         # Prepare conversation prompt
         conversation = [
             {
@@ -54,23 +86,25 @@ class OCRProcessor:
                 "content": [
                     {
                         "type": "image",
+                        "image": image,
                     },
                     {
                         "type": "text",
-                        "text": "extract all data from these handwritten notes without miss anything"
+                        "text": task_prompt
                     }
                 ]
             }
         ]
         
         # Preprocess
-        text_prompt = processor.apply_chat_template(conversation, add_generation_prompt=True)
-        inputs = processor(
-            text=[text_prompt], 
-            images=[image], 
-            padding=True, 
-            return_tensors="pt"
+        inputs = processor.apply_chat_template(
+            conversation,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_dict=True,
+            return_tensors="pt",
         )
+        inputs.pop("token_type_ids", None)
         inputs = inputs.to(self.device)
         
         # Generate

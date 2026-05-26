@@ -1,0 +1,4 @@
+[server]
+# PyTorch exposes torch.classes.__path__ in a way that can confuse Streamlit's
+# source watcher on Windows. Disabling the watcher avoids the startup traceback.
+fileWatcherType = "none"
